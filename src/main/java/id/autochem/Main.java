@@ -1,27 +1,173 @@
 package id.autochem;
 
-/**
- * Created by IntelliJ IDEA.
- * Project : Default (Template) Project
- * User: hendisantika
- * Link: s.id/hendisantika
- * Email: hendisantika@yahoo.co.id
- * Telegram : @hendisantika34
- * Date: 21/11/26
- * Time: 02.28
- * To change this template use File | Settings | File Templates.
- *///TIP To <b>Run</b> code, press <shortcut actionId="Run"/> or
-// click the <icon src="AllIcons.Actions.Execute"/> icon in the gutter.
-public class Main {
-    static void main() {
-        //TIP Press <shortcut actionId="ShowIntentionActions"/> with your caret at the highlighted text
-        // to see how IntelliJ IDEA suggests fixing it.
-        IO.println(String.format("Hello and welcome!"));
+import id.autochem.basics.BigDecimalDemo;
+import id.autochem.basics.CollectionsDemo;
+import id.autochem.basics.OopDemo;
+import id.autochem.basics.TypeSafetyDemo;
+import id.autochem.coa.AccountNotFoundException;
+import id.autochem.coa.ChartOfAccounts;
+import id.autochem.coa.DuplicateAccountCodeException;
+import id.autochem.domain.Account;
+import id.autochem.domain.AccountType;
+import id.autochem.domain.JournalEntry;
+import id.autochem.domain.JournalLine;
+import id.autochem.domain.Money;
+import id.autochem.domain.UnbalancedJournalException;
 
-        for (int i = 1; i <= 5; i++) {
-            //TIP Press <shortcut actionId="Debug"/> to start debugging your code. We have set one <icon src="AllIcons.Debugger.Db_set_breakpoint"/> breakpoint
-            // for you, but you can always add more by pressing <shortcut actionId="ToggleLineBreakpoint"/>.
-            IO.println("i = " + i);
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Mini Java console app Sesi 1: COA in-memory + generic collections + pengecekan jurnal dengan BigDecimal.
+ * <p>
+ * Jalankan:
+ * <pre>
+ *   java src/main/java/id/autochem/Main.java            # materi + hands-on
+ *   java src/main/java/id/autochem/Main.java hands-on   # hanya 3 skenario hands-on
+ *   java src/main/java/id/autochem/Main.java materi     # hanya demo materi
+ * </pre>
+ */
+public class Main {
+
+    static void main(String[] args) {
+        String mode = args.length > 0 ? args[0] : "all";
+        if (!mode.equals("hands-on")) {
+            TypeSafetyDemo.run();
+            CollectionsDemo.run();
+            OopDemo.run();
+            BigDecimalDemo.run();
         }
+        if (!mode.equals("materi")) {
+            handsOn();
+        }
+    }
+
+    private static void handsOn() {
+        IO.println("\n================ HANDS-ON: COA In-Memory ================");
+        ChartOfAccounts coa = seed();
+
+        scenario1SaveAndLookup(coa);
+        scenario2RejectDuplicate(coa);
+        scenario3CheckJournal(coa);
+    }
+
+    private static ChartOfAccounts seed() {
+        ChartOfAccounts coa = new ChartOfAccounts();
+        coa.add(Account.of("1101", "Kas"));
+        coa.add(Account.of("1102", "Bank BCA"));
+        coa.add(Account.of("1201", "Piutang Usaha"));
+        coa.add(Account.of("2101", "Utang Usaha"));
+        coa.add(Account.of("2105", "PPN Keluaran"));
+        coa.add(Account.of("3101", "Modal Disetor"));
+        coa.add(Account.of("4101", "Pendapatan Penjualan"));
+        coa.add(Account.of("5101", "Beban Gaji"));
+        coa.add(new Account("5199", "Beban Lain-lain (lama)", AccountType.EXPENSE, false));
+        return coa;
+    }
+
+    private static void scenario1SaveAndLookup(ChartOfAccounts coa) {
+        IO.println("\n--- Skenario 1: simpan akun & lookup berdasarkan kode");
+        coa.add(Account.of("5102", "Beban Listrik"));
+        IO.println("Total akun: " + coa.size());
+        coa.findAll().forEach(account -> IO.println("  " + account));
+
+        IO.println("Lookup 1101 -> " + coa.findByCode("1101").map(Account::getName).orElse("(tidak ada)"));
+        IO.println("Lookup 9999 -> " + coa.findByCode("9999").map(Account::getName).orElse("(tidak ada)"));
+
+        IO.println("Akun aktif (filter + map): " + coa.findActiveNames());
+        IO.println("Cari 'beban' di akun aktif: " + coa.searchActiveByName("beban").stream().map(Account::getCode).toList());
+        Map<AccountType, List<Account>> byType = coa.groupByType();
+        byType.forEach((type, accounts) -> IO.println("  %-10s %-8s : %s".formatted(
+                type.getLabel(), "(" + type.getNormalBalance() + ")", accounts.stream().map(Account::getCode).toList())));
+    }
+
+    private static void scenario2RejectDuplicate(ChartOfAccounts coa) {
+        IO.println("\n--- Skenario 2: kode akun duplikat ditolak");
+        try {
+            coa.add(Account.of("1101", "Kas Kecil"));
+            IO.println("GAGAL: duplikat seharusnya ditolak");
+        } catch (DuplicateAccountCodeException e) {
+            IO.println("Ditolak: " + e.getMessage());
+        }
+        IO.println("tryAdd 1101 -> " + coa.tryAdd(Account.of("1101", "Kas Kecil")) + ", total akun tetap " + coa.size());
+
+        try {
+            Account.of("1101", "   ");
+        } catch (IllegalArgumentException e) {
+            IO.println("Validasi nama: " + e.getMessage());
+        }
+        try {
+            new Account("1103", "Salah Tipe", AccountType.REVENUE, true);
+        } catch (IllegalArgumentException e) {
+            IO.println("Validasi tipe: " + e.getMessage());
+        }
+    }
+
+    private static void scenario3CheckJournal(ChartOfAccounts coa) {
+        IO.println("\n--- Skenario 3: cek jurnal seimbang / tidak seimbang");
+
+        // Penjualan tunai Rp1.000.000 + PPN 11%
+        BigDecimal sales = Money.of("1000000");
+        BigDecimal vat = Money.vatOf(sales);
+        JournalEntry balanced = new JournalEntry("JU-0001", LocalDate.of(2026, 11, 21), "Penjualan tunai + PPN 11%")
+                .debit("1101", sales.add(vat))
+                .credit("4101", sales)
+                .credit("2105", vat);
+        print(balanced, coa);
+        coa.post(balanced);
+        IO.println("Diposting. Saldo: Kas " + Money.format(coa.getByCode("1101").getBalance())
+                + ", Pendapatan " + Money.format(coa.getByCode("4101").getBalance())
+                + ", PPN Keluaran " + Money.format(coa.getByCode("2105").getBalance()));
+
+        // PPN lupa dicatat -> tidak seimbang
+        JournalEntry unbalanced = new JournalEntry("JU-0002", LocalDate.of(2026, 11, 21), "Penjualan tunai (PPN lupa dicatat)")
+                .debit("1101", Money.of("1110000"))
+                .credit("4101", Money.of("1000000"));
+        print(unbalanced, coa);
+        try {
+            coa.post(unbalanced);
+        } catch (UnbalancedJournalException e) {
+            IO.println("Ditolak: " + e.getMessage());
+        }
+
+        // Akun tidak terdaftar & akun nonaktif
+        JournalEntry unknownAccount = new JournalEntry("JU-0003", LocalDate.of(2026, 11, 21), "Akun tidak terdaftar")
+                .debit("5999", Money.of("50000"))
+                .credit("1101", Money.of("50000"));
+        try {
+            coa.validate(unknownAccount);
+        } catch (AccountNotFoundException e) {
+            IO.println("Ditolak: " + e.getMessage());
+        }
+        JournalEntry inactiveAccount = new JournalEntry("JU-0004", LocalDate.of(2026, 11, 21), "Akun nonaktif")
+                .debit("5199", Money.of("50000"))
+                .credit("1101", Money.of("50000"));
+        try {
+            coa.validate(inactiveAccount);
+        } catch (IllegalStateException e) {
+            IO.println("Ditolak: " + e.getMessage());
+        }
+
+        // Baris jurnal tidak valid (debit dan kredit sekaligus)
+        try {
+            new JournalLine("1101", Money.of("1000"), Money.of("1000"));
+        } catch (IllegalArgumentException e) {
+            IO.println("Ditolak: " + e.getMessage());
+        }
+    }
+
+    private static void print(JournalEntry entry, ChartOfAccounts coa) {
+        IO.println("\n%s | %s | %s".formatted(entry.getNumber(), entry.getDate(), entry.getDescription()));
+        IO.println("  %-5s %-22s %18s %18s".formatted("Akun", "Nama", "Debit", "Kredit"));
+        for (JournalLine line : entry.getLines()) {
+            String name = coa.findByCode(line.accountCode()).map(Account::getName).orElse("?");
+            IO.println("  %-5s %-22s %18s %18s".formatted(line.accountCode(), name,
+                    line.isDebit() ? Money.format(line.debit()) : "",
+                    line.isDebit() ? "" : Money.format(line.credit())));
+        }
+        IO.println("  %-28s %18s %18s".formatted("Total", Money.format(entry.totalDebit()), Money.format(entry.totalCredit())));
+        IO.println("  Seimbang? " + entry.isBalanced() + " | selisih " + Money.format(entry.difference()));
     }
 }
